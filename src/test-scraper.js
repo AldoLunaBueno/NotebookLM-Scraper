@@ -142,7 +142,7 @@ async function testScraping() {
         if (!fragmento || fragmento.trim() === '') {
             const hasImage = await tooltipTextLocator.locator('img').count() > 0;
             if (hasImage) {
-                fragmento = "[Imagen/Partitura referenciada en el documento]";
+                fragmento = "[Imagen]";
             } else {
                 fragmento = "[Fragmento vacío o no detectado]";
             }
