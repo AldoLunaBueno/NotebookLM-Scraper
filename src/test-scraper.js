@@ -88,7 +88,7 @@ async function testScraping() {
     });
 
     // --- PARTE 2: Interactuar con las burbujas para extraer los fragmentos ---
-    console.log('\n🔍 Recopilando citas referenciadas reales...');
+    console.log('\n🔍 Recopilando citas referenciadas reales (vía Hover)...');
     const referencias = [];
     
     // Volvemos a capturar todos los botones ahora que están expandidos
@@ -113,26 +113,42 @@ async function testScraping() {
 
         // 1. Aseguramos que el botón esté en pantalla y hacemos un hover previo (ayuda a Angular)
         await marcador.scrollIntoViewIfNeeded();
-        await marcador.hover();
-        await page.waitForTimeout(200); 
-        await marcador.click();
         
-        // 2. Esperamos al popup. Usamos .last() por si Angular deja tooltips fantasmas en el DOM
-        const tooltipTextLocator = page.locator('.citation-tooltip-text').last();
+        // Usamos hover en lugar de click
+        await marcador.hover();
+        
+        // Contenedor global del tooltip
+        const tooltipLocator = page.locator('xap-dialog-layout.citation-tooltip').last();
+        const tooltipTextLocator = tooltipLocator.locator('.citation-tooltip-text');
         
         try {
-            await tooltipTextLocator.waitFor({ state: 'visible', timeout: 4000 });
+            await tooltipLocator.waitFor({ state: 'visible', timeout: 4000 });
         } catch (error) {
-            console.log(`   ⚠️ Reintentando clic en la cita [${i + 1}]...`);
-            
-            // Si falló (ej. por cambiar de ventana), volvemos a hacer clic
-            await marcador.click();
-            await tooltipTextLocator.waitFor({ state: 'visible', timeout: 4000 });
+            console.log(`   ⚠️ Reintentando hover en la cita [${i + 1}]...`);
+            // Para "reiniciar" el hover, movemos el mouse lejos y volvemos
+            await page.mouse.move(0, 0); 
+            await page.waitForTimeout(200);
+            await marcador.hover();
+            await tooltipLocator.waitFor({ state: 'visible', timeout: 4000 });
         }
         
-        // 3. Extraemos la información
-        const fragmento = await tooltipTextLocator.innerText();
-        const fuente = await page.locator('.citation-tooltip-footer').last().innerText();
+        // Pausa diminuta para que Angular inyecte el contenido
+        await page.waitForTimeout(300);
+
+        // Extraer texto
+        let fragmento = await tooltipTextLocator.innerText();
+        
+        // 🖼️ VALIDACIÓN DE IMAGEN: Si el texto está vacío, verificamos si hay una etiqueta <img>
+        if (!fragmento || fragmento.trim() === '') {
+            const hasImage = await tooltipTextLocator.locator('img').count() > 0;
+            if (hasImage) {
+                fragmento = "[Imagen/Partitura referenciada en el documento]";
+            } else {
+                fragmento = "[Fragmento vacío o no detectado]";
+            }
+        }
+
+        const fuente = await tooltipLocator.locator('.citation-tooltip-footer').innerText();
         
         referencias.push({
             indice: i + 1,
@@ -140,10 +156,9 @@ async function testScraping() {
             fragmento: fragmento.trim()
         });
 
-        // 4. Cerramos el popup y esperamos a que desaparezca del DOM
-        await page.keyboard.press('Escape');
-        await tooltipTextLocator.waitFor({ state: 'hidden', timeout: 3000 });
-        await page.waitForTimeout(300);
+        // 🚀 Cerrar el popup moviendo el mouse a la esquina superior izquierda (coordenada 0,0)
+        await page.mouse.move(0, 0);
+        await tooltipLocator.waitFor({ state: 'hidden', timeout: 3000 });
     }
 
     // --- PARTE 3: Ensamblar el JSON final ---
