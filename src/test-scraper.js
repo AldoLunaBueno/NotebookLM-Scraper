@@ -14,6 +14,7 @@ async function testScraping() {
             '--no-first-run'
         ]
     });
+
     const page = await browser.newPage();
     
     // ⚠️ REEMPLAZA ESTO con la URL de tu cuaderno real de NotebookLM
@@ -46,21 +47,84 @@ async function testScraping() {
     // Para la prueba, 15 segundos deberían bastar para una respuesta corta.
     await page.waitForTimeout(15000); 
 
-    const respuestaExtraida = await page.evaluate(() => {
-        // Selector principal de page-utils.ts
+    // --- PARTE 1: Extraer y limpiar el texto principal ---
+    const textoPrincipal = await page.evaluate(() => {
         const containers = document.querySelectorAll('.to-user-container');
         if (containers.length === 0) return "No se encontraron contenedores de respuesta.";
 
         // Tomamos el último contenedor (la respuesta más reciente)
         const ultimoContenedor = containers[containers.length - 1];
         const textElement = ultimoContenedor.querySelector('.message-text-content');
+        if (!textElement) return "Sin texto.";
+
+        // Clonamos el elemento para no dañar la página visualmente
+        const clone = textElement.cloneNode(true);
         
-        return textElement ? textElement.innerText : "No se encontró el texto dentro del contenedor.";
+        // Buscamos todas las burbujas y las reemplazamos por el formato [1], [2], etc.
+        const markers = clone.querySelectorAll('button.citation-marker');
+        markers.forEach(marker => {
+            const numero = marker.innerText.trim();
+            const textoLimpio = document.createTextNode(` [${numero}]`);
+            marker.parentNode.replaceChild(textoLimpio, marker);
+        });
+
+        return clone.innerText.trim();
     });
 
-    console.log('\n--- 📄 RESPUESTA EXTRAÍDA ---');
-    console.log(respuestaExtraida);
-    console.log('-----------------------------\n');
+    // --- PARTE 2: Interactuar con las burbujas para extraer los fragmentos ---
+    console.log('🔍 Extrayendo citas referenciadas...');
+    const referencias = [];
+    
+    const ultimoContenedor = page.locator('.to-user-container').last();
+    const marcadores = await ultimoContenedor.locator('button.citation-marker').all();
+
+    for (let i = 0; i < marcadores.length; i++) {
+        console.log(`   Procesando cita [${i + 1}/${marcadores.length}]...`);
+        
+        // 1. Aseguramos que el botón esté en pantalla y hacemos un hover previo (ayuda a Angular)
+        await marcadores[i].scrollIntoViewIfNeeded();
+        await marcadores[i].hover();
+        await page.waitForTimeout(200); // Pequeña pausa humana
+        await marcadores[i].click();
+        
+        // 2. Esperamos al popup. Usamos .last() por si Angular deja tooltips fantasmas en el DOM
+        const tooltipTextLocator = page.locator('.citation-tooltip-text').last();
+        
+        try {
+            await tooltipTextLocator.waitFor({ state: 'visible', timeout: 4000 });
+        } catch (error) {
+            console.log(`   ⚠️ Reintentando clic en la cita [${i + 1}]...`);
+            // Si falló (ej. por cambiar de ventana), volvemos a hacer clic
+            await marcadores[i].click();
+            await tooltipTextLocator.waitFor({ state: 'visible', timeout: 4000 });
+        }
+        
+        // 3. Extraemos la información
+        const fragmento = await tooltipTextLocator.innerText();
+        const fuente = await page.locator('.citation-tooltip-footer').last().innerText();
+        
+        referencias.push({
+            indice: i + 1,
+            fuente: fuente.trim(),
+            fragmento: fragmento.trim()
+        });
+
+        // 4. Cerramos el popup y esperamos a que desaparezca del DOM
+        await page.keyboard.press('Escape');
+        await tooltipTextLocator.waitFor({ state: 'hidden', timeout: 3000 });
+        await page.waitForTimeout(300); // Margen de seguridad para la animación
+    }
+
+    // --- PARTE 3: Ensamblar el JSON final ---
+    const resultadoFinal = {
+        pregunta: pregunta,
+        respuesta: textoPrincipal,
+        citas: referencias
+    };
+
+    console.log('\n--- 📦 RESULTADO ESTRUCTURADO (JSON) ---');
+    console.log(JSON.stringify(resultadoFinal, null, 2));
+    console.log('----------------------------------------\n');
 
     console.log('🛑 Cerrando navegador...');
     await browser.close();
